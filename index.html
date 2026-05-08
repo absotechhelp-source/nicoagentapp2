@@ -1281,7 +1281,7 @@ a{text-decoration:none;color:inherit}
       </div>
 
       <div style="text-align:center;padding:20px;color:var(--text-muted);font-size:11px">
-        NICO Life Agent App <span id='app-ver'></span><br/>© 2025 NICO Life Insurance
+        NICO Life Agent App <span id='app-ver'></span><br/>© 2026 NICO Life Insurance
       </div>
     </div>
   </div>
@@ -1881,8 +1881,8 @@ function initDashboard(){
   const isAdmin = currentAgent && currentAgent.isAdmin;
   const adminTile = document.getElementById('admin-tile');
   const myCardTile = document.getElementById('mycard-tile');
-  if(adminTile) adminTile.style.display = isAdmin ? 'flex' : 'none';
-  if(myCardTile) myCardTile.style.display = isAdmin ? 'none' : 'flex';
+  if(adminTile) adminTile.style.display = isAdmin ? 'block' : 'none';
+  if(myCardTile) myCardTile.style.display = isAdmin ? 'none' : 'block';
 
   // Recent
   const recList = document.getElementById('recent-list');
@@ -1944,7 +1944,8 @@ function generateQuote(){
     data:d, notes,
     date:new Date().toISOString(),
     status:'draft',
-    agent: currentAgent?.displayName || 'Agent'
+    agent: currentAgent?.displayName || 'Agent',
+    branch: currentAgent?.branch || ''
   };
   currentQuote = quote;
 
@@ -2545,7 +2546,8 @@ function initProfile(){
   const init=(agent.displayName||agent.name||'A').charAt(0).toUpperCase();
   document.getElementById('prof-avatar').textContent=init;
   document.getElementById('prof-name').textContent=agent.displayName||agent.name||'Agent';
-  document.getElementById('prof-role').textContent=(agent.role||'Agent')+' · NICO Life';
+  const _branch = agent.branch ? ' · '+agent.branch : '';
+  document.getElementById('prof-role').textContent=(agent.role||'Agent')+' · NICO Life'+_branch;
   document.getElementById('ps-quotes').textContent=quotes.length;
   document.getElementById('ps-sent').textContent=quotes.filter(q=>q.status==='sent').length;
   const join=agent.joinDate?Math.floor((Date.now()-new Date(agent.joinDate))/864e5):0;
@@ -2586,7 +2588,17 @@ function openEditProfile(){
     <div class="field-group"><label>Agent ID</label><input id="ep-id" type="text" value="${agent.id||''}"/></div>
     <div class="field-group"><label>Phone</label><input id="ep-phone" type="tel" value="${agent.phone||''}"/></div>
     <div class="field-group"><label>Email</label><input id="ep-email" type="email" value="${agent.email||''}"/></div>
-    <div class="field-group"><label>Role/Title</label><input id="ep-role" type="text" value="${agent.role||'Senior Agent'}"/></div>
+    <div class="field-group"><label>Role / Title</label><input id="ep-role" type="text" value="${agent.role||'Senior Agent'}"/></div>
+    <div class="field-group"><label>Branch</label>
+      <select id="ep-branch">
+        <option value="" ${!agent.branch?'selected':''}>Select Branch</option>
+        <option value="Blantyre" ${'Blantyre'===agent.branch?'selected':''}>Blantyre</option>
+        <option value="Lilongwe" ${'Lilongwe'===agent.branch?'selected':''}>Lilongwe</option>
+        <option value="Mzuzu" ${'Mzuzu'===agent.branch?'selected':''}>Mzuzu</option>
+        <option value="Mangochi" ${'Mangochi'===agent.branch?'selected':''}>Mangochi</option>
+        <option value="Kasungu" ${'Kasungu'===agent.branch?'selected':''}>Kasungu</option>
+      </select>
+    </div>
     <button onclick="saveProfile()" style="width:100%;padding:14px;border-radius:10px;background:var(--brand-blue);color:#fff;font-weight:700;font-size:14px;cursor:pointer;border:none;margin-top:4px">Save Profile</button>
   `);
 }
@@ -2598,6 +2610,11 @@ function saveProfile(){
   agent.phone=document.getElementById('ep-phone').value;
   agent.email=document.getElementById('ep-email').value;
   agent.role=document.getElementById('ep-role').value;
+  agent.branch=document.getElementById('ep-branch').value;
+  // Also update the agent in the agents roster
+  const agents=getAgents();
+  const idx=agents.findIndex(a=>a.id===agent.id);
+  if(idx>=0){agents[idx]={...agents[idx],...agent};saveAgents(agents);}
   saveAgent(agent);currentAgent=agent;
   closeModal();showToast('Profile saved ✓');
   initProfile();
@@ -2610,14 +2627,18 @@ async function syncQuote(q){
   const url=load('nico_sheets_url','');
   if(!url)return;
   try{
-    await fetch(url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
+    // GET request with URL parameters — the only method that survives
+    // Apps Script's internal 302 redirect without body loss.
+    // POST redirects always drop the body; GET redirects preserve query string.
+    const _payload = encodeURIComponent(JSON.stringify({
         ref:q.ref,client:q.client,phone:q.phone,
         premium:q.premium,sumAssured:q.data.sum,
         maturityValue:q.data.mat,bonus:q.data.bonus,
-        date:q.date,agent:q.agent,status:q.status
-      })
-    });
+        capitalInvested:q.data.cap,maturity5pct:q.data.mat5,maturity10pct:q.data.mat10,
+        date:q.date,agent:q.agent,branch:q.branch||'',
+        product:q.product||'Cash Plus Policy',status:q.status
+    }));
+    await fetch(url+'?payload='+_payload,{mode:'no-cors'});
     showToast('Synced to Sheets ✓');
   }catch{showToast('Sync failed — check URL')}
 }
@@ -2678,10 +2699,13 @@ function openModal(title,body){
   document.getElementById('modal-overlay').classList.add('open');
 }
 function closeModal(e){
-  if(e&&e.target!==document.getElementById('modal-overlay'))return;
+  // When called from overlay onclick(event): only close if user tapped the backdrop itself
+  // When called directly with no arg (from buttons): always close
+  if(e && e.target !== document.getElementById('modal-overlay')) return;
   document.getElementById('modal-overlay').classList.remove('open');
 }
-function closeModal(){document.getElementById('modal-overlay').classList.remove('open')}
+// NOTE: no second definition — having two closeModal functions causes the second to
+// override the first, making the modal close on every tap including inside inputs.
 
 // ============================================================
 // TOAST
@@ -2876,6 +2900,7 @@ function renderAgentList(){
 }
 
 function openAddAgent(){
+  const sel = fieldStyle().replace('border-radius:10px','border-radius:var(--radius-sm)');
   openModal('Add New Agent',`
     <div class="field-group"><label>Agent ID</label>
       <input id="na-id" type="text" placeholder="e.g. AGT-002" style="${fieldStyle()}"/></div>
@@ -2883,6 +2908,15 @@ function openAddAgent(){
       <input id="na-name" type="text" placeholder="Full name" style="${fieldStyle()}"/></div>
     <div class="field-group"><label>Role / Title</label>
       <input id="na-role" type="text" placeholder="e.g. Senior Agent" style="${fieldStyle()}"/></div>
+    <div class="field-group"><label>Branch</label>
+      <select id="na-branch" style="${sel}">
+        <option value="">Select Branch</option>
+        <option value="Blantyre">Blantyre</option>
+        <option value="Lilongwe">Lilongwe</option>
+        <option value="Mzuzu">Mzuzu</option>
+        <option value="Mangochi">Mangochi</option>
+        <option value="Kasungu">Kasungu</option>
+      </select></div>
     <div class="field-group"><label>Phone</label>
       <input id="na-phone" type="tel" placeholder="+265 XXX XXX XXX" style="${fieldStyle()}"/></div>
     <div class="field-group"><label>Email</label>
@@ -2911,9 +2945,11 @@ function saveNewAgent(){
   const agents=getAgents();
   if(agents.find(a=>a.id===id)){showToast('Agent ID already exists');return}
 
+  const branch = document.getElementById('na-branch') ? document.getElementById('na-branch').value : '';
   const newAgent={
     id,displayName:name,name:name.toLowerCase(),
-    role:role||'Agent',phone,email:email||(id+'@nicomw.com'),
+    role:role||'Agent',phone,branch,
+    email:email||(id+'@nicomw.com'),
     password:pass,isAdmin,status:'active',
     joinDate:new Date().toISOString(),
     card:{name,title:role||'Insurance Agent',phone,email}
@@ -2921,7 +2957,7 @@ function saveNewAgent(){
   agents.push(newAgent);
   saveAgents(agents);
   closeModal();
-  renderAgentList();
+  initAdmin();
   showToast('Agent '+name+' added ✓');
 }
 
